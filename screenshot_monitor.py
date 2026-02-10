@@ -7,14 +7,13 @@ import sys
 import time
 import win32com.shell.shell as shell
 
-from PySide6.QtCore import Qt, QTimer, QUrl, QSize, QObject, Signal
+from PySide6.QtCore import Qt, QTimer, QUrl, QSize, QObject, Signal, QPropertyAnimation, QEasingCurve, QPoint
 from PySide6.QtGui import QPixmap, QAction, QIcon, QDrag, QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
     QWidget,
     QLabel,
     QHBoxLayout,
-    QVBoxLayout,
     QSystemTrayIcon,
     QMenu,
 )
@@ -92,6 +91,12 @@ class PreviewPopup(QWidget):
         self._press_pos = None
         self._drag_started = False
 
+        # Animation attributes
+        self._slide_in_animation: QPropertyAnimation | None = None
+        self._slide_out_animation: QPropertyAnimation | None = None
+        self._target_pos: QPoint | None = None
+        self._is_animating_out = False
+
         self.setWindowFlags(
             Qt.Tool
             | Qt.FramelessWindowHint
@@ -117,24 +122,9 @@ class PreviewPopup(QWidget):
         self.thumb.setFixedSize(QSize(self.config.max_preview_size, self.config.max_preview_size))
         self.thumb.setAlignment(Qt.AlignCenter)
 
-        self.title = QLabel("Screenshot saved")
-        self.title.setStyleSheet("font-weight: 600; font-size: 13px;")
-
-        self.path_label = QLabel("")
-        self.path_label.setStyleSheet("font-size: 11px; color: rgba(255,255,255,180);")
-        self.path_label.setTextInteractionFlags(Qt.NoTextInteraction)
-        self.path_label.setWordWrap(True)
-
-        text_col = QVBoxLayout()
-        text_col.addWidget(self.title)
-        text_col.addWidget(self.path_label)
-        text_col.addStretch(1)
-
         row = QHBoxLayout(self.container)
         row.setContentsMargins(12, 12, 12, 12)
-        row.setSpacing(12)
         row.addWidget(self.thumb)
-        row.addLayout(text_col)
 
         self.hide_timer = QTimer(self)
         self.hide_timer.setSingleShot(True)
@@ -143,16 +133,11 @@ class PreviewPopup(QWidget):
         self.setMouseTracking(True)
         self.container.setMouseTracking(True)
         self.thumb.setMouseTracking(True)
-        self.title.setMouseTracking(True)
-        self.path_label.setMouseTracking(True)
 
-        self.resize(520, 260)
+        self.resize(260, 260)
 
     def show_preview(self, file_path: str):
         self.current_file = file_path
-
-        p = Path(file_path)
-        self.path_label.setText(str(p))
 
         pix = QPixmap(file_path)
         if pix.isNull():
@@ -166,17 +151,80 @@ class PreviewPopup(QWidget):
             )
             self.thumb.setPixmap(scaled)
 
-        self._move_to_bottom_right()
+        self._animate_in()
+
+    def _animate_in(self):
+        # Cancel any ongoing animations
+        if self._slide_out_animation and self._slide_out_animation.state() == QPropertyAnimation.Running:
+            self._slide_out_animation.stop()
+        if self._slide_in_animation and self._slide_in_animation.state() == QPropertyAnimation.Running:
+            self._slide_in_animation.stop()
+
+        # Calculate target position
+        screen = QGuiApplication.primaryScreen()
+        geo = screen.availableGeometry()
+        margin = 24
+        target_x = geo.x() + geo.width() - self.width() - margin
+        target_y = geo.y() + geo.height() - self.height() - margin
+        self._target_pos = QPoint(target_x, target_y)
+
+        # Start off-screen to the right
+        start_x = geo.x() + geo.width() + 20
+        start_pos = QPoint(start_x, target_y)
+        self.move(start_pos)
+        self._is_animating_out = False
+
+        # Show the window
         self.show()
         self.raise_()
         self.activateWindow()
 
+        # Create slide-in animation
+        self._slide_in_animation = QPropertyAnimation(self, b"pos")
+        self._slide_in_animation.setDuration(500)  # 500ms
+        self._slide_in_animation.setStartValue(start_pos)
+        self._slide_in_animation.setEndValue(self._target_pos)
+        self._slide_in_animation.setEasingCurve(QEasingCurve.Type.OutBack)
+        self._slide_in_animation.start()
+
+        # Start hide timer
         self.hide_timer.start(self.config.popup_seconds * 1000)
+
+    def _animate_out(self):
+        if self._is_animating_out:
+            return
+        self._is_animating_out = True
+
+        # Cancel any ongoing animations
+        if self._slide_in_animation and self._slide_in_animation.state() == QPropertyAnimation.Running:
+            self._slide_in_animation.stop()
+
+        # Calculate end position (off-screen to the right)
+        screen = QGuiApplication.primaryScreen()
+        geo = screen.availableGeometry()
+        end_x = geo.x() + geo.width() + self.width()
+        end_pos = QPoint(end_x, self._target_pos.y() if self._target_pos else self.y())
+
+        # Create slide-out animation
+        self._slide_out_animation = QPropertyAnimation(self, b"pos")
+        self._slide_out_animation.setDuration(400)  # 400ms
+        self._slide_out_animation.setStartValue(self.pos())
+        self._slide_out_animation.setEndValue(end_pos)
+        self._slide_out_animation.setEasingCurve(QEasingCurve.Type.InBack)
+        self._slide_out_animation.finished.connect(self._hide_after_animation)
+        self._slide_out_animation.start()
+
+    def _hide_after_animation(self):
+        super(PreviewPopup, self).hide()
+        self._is_animating_out = False
+
+    def hide(self):
+        self._animate_out()
 
     def _move_to_bottom_right(self):
         screen = QGuiApplication.primaryScreen()
         geo = screen.availableGeometry()
-        margin = 18
+        margin = 24
         x = geo.x() + geo.width() - self.width() - margin
         y = geo.y() + geo.height() - self.height() - margin
         self.move(x, y)
