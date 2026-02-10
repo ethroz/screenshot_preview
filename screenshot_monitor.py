@@ -134,7 +134,9 @@ class PreviewPopup(QWidget):
         self.container.setMouseTracking(True)
         self.thumb.setMouseTracking(True)
 
-        self.resize(260, 260)
+        # Calculate window size based on thumbnail size + margins (12px each side)
+        window_size = self.config.max_preview_size + 24
+        self.resize(window_size, window_size)
 
     def show_preview(self, file_path: str):
         self.current_file = file_path
@@ -144,12 +146,23 @@ class PreviewPopup(QWidget):
             # fallback: show filename only
             self.thumb.setText("Preview unavailable")
         else:
-            scaled = pix.scaled(
-                self.thumb.size(),
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation
-            )
+            # Calculate scaled size while respecting max dimension
+            orig_width = pix.width()
+            orig_height = pix.height()
+            max_size = self.config.max_preview_size
+
+            # Scale to fit within max_size, scaling up if smaller
+            scale = min(max_size / orig_width, max_size / orig_height)
+            new_width = int(orig_width * scale)
+            new_height = int(orig_height * scale)
+
+            # Scale the pixmap to the calculated size
+            scaled = pix.scaled(new_width, new_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             self.thumb.setPixmap(scaled)
+
+            # Resize thumbnail label and window to match the image dimensions
+            self.thumb.setFixedSize(new_width, new_height)
+            self.resize(new_width + 24, new_height + 24)  # add margins
 
         self._animate_in()
 
